@@ -1,3 +1,4 @@
+// server.js
 require('dotenv').config();
 const express = require('express');
 const mysql = require('mysql2');
@@ -16,9 +17,10 @@ app.use(bodyParser.json());
 // Database connection
 const db = mysql.createConnection({
   host: process.env.DB_HOST || 'localhost',
+  port: process.env.DB_PORT || 3306,
   user: process.env.DB_USER || 'root',
   password: process.env.DB_PASSWORD || '',
-  database: process.env.DB_NAME || 'crm_db'
+  database: process.env.DB_NAME || ''
 });
 
 db.connect(err => {
@@ -63,12 +65,11 @@ const createTables = () => {
 
 createTables();
 
-// Register (no OTP)
+// Register
 app.post('/api/register', async (req, res) => {
   const { phoneNumber, password } = req.body;
 
   try {
-    // Check if user exists
     const [existingUser] = await db.promise().query(
       'SELECT * FROM users WHERE phone_number = ?',
       [phoneNumber]
@@ -78,10 +79,8 @@ app.post('/api/register', async (req, res) => {
       return res.status(400).json({ message: 'User already exists' });
     }
 
-    // Hash password
     const hashedPassword = await bcrypt.hash(password, 10);
 
-    // Create user (is_verified = true by default)
     await db.promise().query(
       'INSERT INTO users (phone_number, password, is_verified) VALUES (?, ?, TRUE)',
       [phoneNumber, hashedPassword]
@@ -99,7 +98,6 @@ app.post('/api/login', async (req, res) => {
   const { phoneNumber, password } = req.body;
 
   try {
-    // Find user
     const [users] = await db.promise().query(
       'SELECT * FROM users WHERE phone_number = ?',
       [phoneNumber]
@@ -111,20 +109,17 @@ app.post('/api/login', async (req, res) => {
 
     const user = users[0];
 
-    // Verify password
     const isMatch = await bcrypt.compare(password, user.password);
     if (!isMatch) {
       return res.status(400).json({ message: 'Invalid credentials' });
     }
 
-    // Create JWT token
     const token = jwt.sign(
       { userId: user.id, phoneNumber: user.phone_number },
       process.env.JWT_SECRET || 'your_jwt_secret',
       { expiresIn: '1h' }
     );
 
-    // Store session
     await db.promise().query(
       'INSERT INTO sessions (user_id, token) VALUES (?, ?)',
       [user.id, token]
@@ -146,7 +141,6 @@ app.post('/api/logout', async (req, res) => {
   }
 
   try {
-    // Update session with logout time
     await db.promise().query(
       'UPDATE sessions SET logout_time = CURRENT_TIMESTAMP WHERE token = ?',
       [token]
@@ -159,12 +153,7 @@ app.post('/api/logout', async (req, res) => {
   }
 });
 
-// Protected route example
-app.get('/api/protected', authenticateToken, (req, res) => {
-  res.json({ message: 'This is a protected route', user: req.user });
-});
-
-// Middleware to authenticate token
+// Middleware for protected routes
 function authenticateToken(req, res, next) {
   const token = req.headers.authorization?.split(' ')[1];
 
@@ -181,8 +170,12 @@ function authenticateToken(req, res, next) {
   });
 }
 
+// Protected example
+app.get('/api/protected', authenticateToken, (req, res) => {
+  res.json({ message: 'This is a protected route', user: req.user });
+});
 
-// Student Status Type (for validation)
+// Valid status types
 const validStatuses = [
   'Non responsive',
   'Not interested',
@@ -193,8 +186,7 @@ const validStatuses = [
   'Dead'
 ];
 
-// --------------------------------------------
-// Get paginated student records with followup_date
+// Paginated students
 app.get('/api/students', (req, res) => {
   const page = parseInt(req.query.page) || 1;
   const limit = parseInt(req.query.limit) || 10;
@@ -209,7 +201,6 @@ app.get('/api/students', (req, res) => {
     const total = countResults[0].total;
     const totalPages = Math.ceil(total / limit);
 
-    // Include followup_date in the selected fields
     db.query(
       'SELECT id, name, age, course, education, mobile, status, followup_date, notes FROM registrations LIMIT ? OFFSET ?',
       [limit, offset],
@@ -219,10 +210,9 @@ app.get('/api/students', (req, res) => {
           return res.status(500).json({ error: 'Internal server error' });
         }
 
-        // Ensure followup_date is null for missing dates (MySQL does this by default, but double-check)
         const data = rows.map((student) => ({
           ...student,
-          followup_date: student.followup_date ? student.followup_date : null
+          followup_date: student.followup_date || null
         }));
 
         res.json({
@@ -239,8 +229,7 @@ app.get('/api/students', (req, res) => {
   });
 });
 
-// --------------------------------------------
-// Get full student details
+// Get student details
 app.get('/api/students/:id', (req, res) => {
   const { id } = req.params;
 
@@ -258,10 +247,9 @@ app.get('/api/students/:id', (req, res) => {
   });
 });
 
-// --------------------------------------------
 // Update student status
 app.put('/api/students/:id/status', (req, res) => {
- const { id } = req.params;
+  const { id } = req.params;
   const { status, followup_date, notes } = req.body;
 
   if (!validStatuses.includes(status)) {
@@ -281,7 +269,7 @@ app.put('/api/students/:id/status', (req, res) => {
   query += ' WHERE id = ?';
   params.push(id);
 
-  db.query(query, params, (err, result) => {
+  db.query(query, params, (err) => {
     if (err) {
       console.error('Error updating student status:', err);
       return res.status(500).json({ error: 'Internal server error' });
@@ -291,10 +279,9 @@ app.put('/api/students/:id/status', (req, res) => {
   });
 });
 
-
+// Notification list
 app.get('/api/notifications', (req, res) => {
-  const today = new Date();
-  const todayStr = today.toISOString().slice(0, 10); // YYYY-MM-DD
+  const todayStr = new Date().toISOString().slice(0, 10);
 
   const query = `
     SELECT id, name, status, followup_date 
@@ -311,7 +298,6 @@ app.get('/api/notifications', (req, res) => {
       return res.status(500).json({ error: 'Internal server error' });
     }
 
-    // Disable caching on response
     res.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
     res.set('Pragma', 'no-cache');
     res.set('Expires', '0');
@@ -321,10 +307,8 @@ app.get('/api/notifications', (req, res) => {
   });
 });
 
-
-
-
-
+// Start server
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
+  console.log(`Database running on ${process.env.DB_PORT || 3306}`);
 });
